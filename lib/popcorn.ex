@@ -3,10 +3,14 @@ defmodule Popcorn do
   Documentation for `Popcorn`: functions that should be in Kernel but aren't.
   """
 
+  @type result_atom :: :ok | :error
+
   @type ok_tuple :: {:ok, any()}
   @type error_tuple :: {:error, String.t() | atom}
   @type result_tuple :: ok_tuple() | error_tuple()
   @type maybe_any :: any() | nil
+
+  @type result :: result_atom() | result_tuple()
 
   @doc """
   Wrap the value in an :ok tuple. The main purpose of this function is to use at the end of a pipe:
@@ -40,17 +44,32 @@ defmodule Popcorn do
   into another function that expects a simple value -- but only
   if it's a success tuple:
 
-    iex> {:ok, 10}
-    iex> |> Popcorn.bind(&to_string/1)
-    "10"
+    iex> {:ok, [1, 2, 3]}
+    iex> |> Popcorn.bind(& Enum.fetch(&1, 0))
+    {:ok, 1}
 
     iex> {:error, :invalid}
     iex> |> Popcorn.bind(&to_string/1)
     {:error, :invalid}
+
+    Note that you can't give it an `:ok` atom as input because there's no clearly defined behaviour for this: it's not an error but also shouldn't be expected to be used as input directly into another function.
   """
-  @spec bind(result_tuple(), (any() -> result_tuple())) :: result_tuple()
-  def bind({:ok, value}, f), do: f.(value)
+  @spec bind(result_tuple() | :error, (any() -> result_tuple() | result_atom())) :: result_tuple()
+  def bind({:ok, value}, f), do: ensure_is_result(f.(value))
   def bind({:error, _} = error_tuple, _), do: error_tuple
+  def bind(:error), do: :error
+
+  @spec ensure_is_result(any) :: result_tuple | result_atom | no_return
+  def ensure_is_result(any) do
+    case any do
+      {:ok, _} -> any
+      {:error, _} -> any
+      :ok -> any
+      :error -> any
+    end
+  rescue
+    CaseClauseError -> raise ArgumentError, "Expected argument to return a result tuple or atom"
+  end
 
   @doc """
   Maybe execute a function if the given param is not nil:
@@ -113,4 +132,54 @@ defmodule Popcorn do
   """
   @spec id(term) :: term
   defdelegate id(term), to: Function, as: :identity
+
+  @doc """
+  Bind alias
+
+  iex> {:ok, "3.14"} ~> &String.to_float/1
+  {:ok, 3.14}
+
+  """
+  @spec result_tuple() ~> (any() -> result_tuple()) :: result_tuple()
+  defdelegate result_tuple ~> f, to: __MODULE__, as: :bind
+
+  @doc """
+    iex> {:ok, "happy"} &&& {:ok, "success"}
+    {:ok, "success"}
+
+    iex> {:ok, "happy"} &&& {:error, "failure"}
+    {:error, "failure"}
+
+    iex> {:error, "failure"} &&& {:ok, "happy"}
+    {:error, "failure"}
+
+  """
+  def result1 &&& result2 do
+    case {result1, result2} do
+      {{:ok, _}, result_tuple} -> result_tuple
+      {{:error, _} = err, _} -> err
+      _ -> raise ArgumentError
+    end
+  end
+
+  @doc """
+    iex> {:ok, "happy"} ||| {:ok, "success"}
+    {:ok, "happy"}
+
+    iex> {:ok, "happy"} ||| {:error, "failure"}
+    {:ok, "happy"}
+
+    iex> {:error, "failure"} ||| {:ok, "happy"}
+    {:ok, "happy"}
+
+    iex> {:error, "failure"} ||| {:error, "oops"}
+    {:error, "oops"}
+  """
+  def result1 ||| result2 do
+    case {result1, result2} do
+      {{:ok, _} = success, _} -> success
+      {{:error, _}, result} -> result
+      _ -> raise ArgumentError
+    end
+  end
 end
